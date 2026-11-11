@@ -366,8 +366,8 @@ const LABS = [
       ]
     },
     mcq: [
-      { q: 'Which term means “a compressed and organised version of the data where similar images are close together”?', o: ['Segmentation map', 'Latent space', 'Noise vector', 'Training dataset'], a: 1, why: 'That is the case study’s definition of latent space (lines 65–66).' },
-      { q: 'Which term describes a generator producing limited variations?', o: ['Training stability', 'Mode collapse', 'Style adherence', 'Noise injection'], a: 1, why: 'Mode collapse: the generator fails to capture the full diversity of the dataset.' },
+      { hl: true, q: 'Which term means “a compressed and organised version of the data where similar images are close together”?', o: ['Segmentation map', 'Latent space', 'Noise vector', 'Training dataset'], a: 1, why: 'That is the case study’s definition of latent space (lines 65–66).' },
+      { hl: true, q: 'Which term describes a generator producing limited variations?', o: ['Training stability', 'Mode collapse', 'Style adherence', 'Noise injection'], a: 1, why: 'Mode collapse: the generator fails to capture the full diversity of the dataset.' },
       { q: 'Which term describes converting a black-and-white image into colour?', o: ['Image-to-image translation', 'Unconditional generation', 'Denoising', 'Dataset curation'], a: 0, why: 'Image-to-image translation transforms one image type into another.' }
     ],
     written: []

@@ -5,7 +5,9 @@ const app = document.getElementById('app');
 
 const stageDone = (lab, s) => !!store.get(`st:${lab}:${s}`);
 const labProgress = (lab) => STAGES.filter(([s]) => stageDone(lab, s)).length;
-function overall() { const n = LABS.reduce((a, l) => a + labProgress(l.id), 0); return n / (LABS.length * STAGES.length); }
+const isLocked = (lab) => lab.badge === 'HL' && level === 'SL';
+const myLabs = () => LABS.filter(l => !isLocked(l));
+function overall() { const L = myLabs(); const n = L.reduce((a, l) => a + labProgress(l.id), 0); return n / (L.length * STAGES.length); }
 function updTop() { document.getElementById('ovbar').style.width = `${overall() * 100}%`; document.getElementById('ovtxt').textContent = `${Math.round(overall() * 100)}% complete`; }
 
 function ring(frac, color) {
@@ -60,13 +62,14 @@ function renderHome() {
   const labs = h('div', { class: 'labs' });
   LABS.forEach(l => {
     const p = labProgress(l.id);
-    labs.append(h('a', { class: 'labcard' + (level === 'SL' && l.badge === 'HL' ? ' dim' : ''), href: `#lab-${l.id}` },
+    labs.append(h('a', { class: 'labcard' + (isLocked(l) ? ' locked-card' : ''), href: `#lab-${l.id}`, 'aria-label': isLocked(l) ? `${l.title}: locked, HL only` : null },
+      isLocked(l) ? h('span', { class: 'lockbadge' }, '🔒 HL only') : '',
       thumbFor(l.thumb), h('span', { class: 'n' }, `Lab 0${l.id}`), h('h3', {}, l.title),
       h('div', { class: 'meta' }, h('div', { style: 'display:grid;gap:4px' }, badgeEl(l.badge), h('span', {}, l.lines)), h('div', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' }, h('span', { class: 'num' }, `${p}/${STAGES.length}`), ring(p / STAGES.length)))));
   });
   wrap.append(h('section', { class: 'panel', style: 'margin-top:26px' },
     h('div', { class: 'section-head' }, h('h2', {}, 'Start a lab'), h('a', { href: '#lab-1', style: 'color:var(--accent);font-weight:700;text-decoration:none' }, 'Learn in a structured sequence →')),
-    level === 'SL' ? h('p', { class: 'small muted', style: 'margin:-6px 0 12px' }, 'You are in SL mode: HL-only labs are faded but still open if you are curious.') : '',
+    level === 'SL' ? h('p', { class: 'small muted', style: 'margin:-6px 0 12px' }, levelLockedByTeacher() ? 'Your teacher has set your level to SL: HL-only labs are locked.' : 'SL mode: HL-only labs are locked. Switch to HL at the top if you take HL.') : '',
     labs));
 
   wrap.append(h('section', { class: 'panel', style: 'margin-top:18px' },
@@ -99,6 +102,13 @@ function stageSection(lab, key, idx, title, ...content) {
 function renderLab(id) {
   const lab = LABS.find(l => l.id === id); if (!lab) return renderHome();
   const wrap = h('div', { class: 'wrap' });
+  if (isLocked(lab)) {
+    wrap.append(h('div', { class: 'labhead' }, h('div', {}, h('div', { class: 'crumbs' }, h('a', { href: '#home' }, '← All labs'), h('span', {}, `Lab 0${id}`), badgeEl(lab.badge)), h('h1', {}, lab.title))),
+      h('section', { class: 'panel lockpanel' }, h('p', { class: 'lockicon', 'aria-hidden': 'true' }, '🔒'), h('h2', {}, 'This lab is for HL students only'),
+        h('p', { class: 'muted', style: 'margin-top:8px;max-width:58ch' }, levelLockedByTeacher() ? 'Your teacher has set your level to SL, so this lab is locked. SL students are not examined on GANs or hybrid models.' : 'You are in SL mode, so this lab is locked. SL students are not examined on GANs or hybrid models. If you take HL, switch to HL at the top of the page.'),
+        h('div', { class: 'row', style: 'margin-top:16px' }, h('a', { class: 'btn', href: '#home', style: 'text-decoration:none' }, 'Back to my labs'))));
+    app.append(wrap); return;
+  }
   const p = labProgress(id);
   const head = h('div', { class: 'labhead' },
     h('div', {}, h('div', { class: 'crumbs' }, h('a', { href: '#home' }, '← All labs'), h('span', {}, `Lab 0${id}`), h('span', {}, '·'), h('span', {}, lab.lines), badgeEl(lab.badge)),
@@ -108,7 +118,6 @@ function renderLab(id) {
     h('button', { class: 'step' + (stageDone(id, k) ? ' done' : ''), 'data-step': k, onclick: () => document.getElementById(`stage-${k}`).scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth' }) }, h('span', { class: 'dot' }, String(i + 1)), t))));
   wrap.append(head);
   const body = h('div', { class: 'wrap' });
-  if (lab.badge === 'HL' && level === 'SL') body.append(h('div', { class: 'hlnote' }, h('b', {}, 'HL only. '), 'SL students are not expected to know this content. Explore it for interest, or switch to HL at the top.'));
 
   // 1 Sense — prediction lock
   const pk = `pred:${id}`; const senseBox = h('div');
@@ -174,15 +183,16 @@ function renderLab(id) {
 
   // 5 Practise
   const ps = h('span', { class: 'score' });
-  const updScore = () => { const n = lab.mcq.filter((m, i) => store.get(`mcq:${id}:${i}`) === m.a).length, a = lab.mcq.filter((m, i) => store.get(`mcq:${id}:${i}`) != null).length; ps.textContent = lab.mcq.length ? `Quick check: ${n} / ${lab.mcq.length} correct${a < lab.mcq.length ? ` (${lab.mcq.length - a} to go)` : ''}` : ''; };
+  const qs = lab.mcq.map((m, i) => [m, i]).filter(([m]) => !(m.hl && level === 'SL'));
+  const updScore = () => { const n = qs.filter(([m, i]) => store.get(`mcq:${id}:${i}`) === m.a).length, a = qs.filter(([, i]) => store.get(`mcq:${id}:${i}`) != null).length; ps.textContent = qs.length ? `Quick check: ${n} / ${qs.length} correct${a < qs.length ? ` (${qs.length - a} to go)` : ''}` : ''; };
   const pr = [h('p', { class: 'disclaim' }, 'Practice questions written for this lab, not IB questions. Rate your confidence before answering each one.'), h('div', { style: 'margin-bottom:12px' }, ps),
-    ...lab.mcq.map((m, i) => mcqQ(m, store, `mcq:${id}:${i}`, () => { updScore(); calibHook && calibHook(); }, `conf:${id}:${i}`)),
+    ...qs.map(([m, i]) => mcqQ(m, store, `mcq:${id}:${i}`, () => { updScore(); calibHook && calibHook(); }, `conf:${id}:${i}`)),
     ...lab.written.map((w, i) => writtenQ(w, store, `pw:${id}:${i}`))];
   if (id === 7) pr.push(h('p', { class: 'callout', style: 'margin-top:12px' }, 'The full question bank and timed mock are in the Hands-on stage above.'));
   body.append(stageSection(lab, 'practise', 5, 'Exam-style practice', ...pr));
   updScore();
   const calib = h('p', { class: 'small', style: 'margin-top:4px' });
-  const updCal = () => { let sw = 0, gr = 0; lab.mcq.forEach((m, i) => { const a = store.get(`mcq:${id}:${i}`), c = store.get(`conf:${id}:${i}`); if (a == null) return; if (c === 'sure' && a !== m.a) sw++; if (c === 'guess' && a === m.a) gr++; }); calib.innerHTML = (sw || gr) ? `<b>Calibration:</b> ${sw ? `sure but wrong ×${sw}: revise these first. ` : ''}${gr ? `guessed but right ×${gr}: you know more than you think; make sure you can explain why.` : ''}` : ''; };
+  const updCal = () => { let sw = 0, gr = 0; qs.forEach(([m, i]) => { const a = store.get(`mcq:${id}:${i}`), c = store.get(`conf:${id}:${i}`); if (a == null) return; if (c === 'sure' && a !== m.a) sw++; if (c === 'guess' && a === m.a) gr++; }); calib.innerHTML = (sw || gr) ? `<b>Calibration:</b> ${sw ? `sure but wrong ×${sw}: revise these first. ` : ''}${gr ? `guessed but right ×${gr}: you know more than you think; make sure you can explain why.` : ''}` : ''; };
   ps.after(calib); updCal(); calibHook = updCal;
 
   const prev = LABS.find(l => l.id === id - 1), next = LABS.find(l => l.id === id + 1);
@@ -201,9 +211,17 @@ function route() {
   document.querySelectorAll('.navlinks a').forEach(a => a.setAttribute('aria-current', String(a.getAttribute('href') === location.hash)));
   window.scrollTo(0, 0); updTop();
 }
-function setLevel(l) {
-  level = l; store.set('level', l);
-  document.querySelectorAll('.level button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.l === l)));
+function levelLockedByTeacher() { return typeof CLOUD !== 'undefined' && !!CLOUD.S.level; }
+function setLevel(l, force) {
+  if (levelLockedByTeacher() && !force) l = CLOUD.S.level;
+  level = l; if (store.get('level') !== l) store.set('level', l);
+  const lockedBy = levelLockedByTeacher();
+  document.querySelectorAll('.level button').forEach(b => {
+    b.setAttribute('aria-pressed', String(b.dataset.l === l));
+    b.disabled = lockedBy && b.dataset.l !== l;
+    b.title = lockedBy ? 'Level set by your teacher' : '';
+  });
+  document.querySelector('.level').classList.toggle('fixed', lockedBy);
   route();
 }
 document.querySelectorAll('.level button').forEach(b => b.addEventListener('click', () => setLevel(b.dataset.l)));

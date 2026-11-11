@@ -329,3 +329,12 @@ table.dash td { vertical-align: top; font-size: 14px; }
 #t-npw { border: 1.5px solid var(--line); background: var(--card); border-radius: 10px; padding: 7px 10px; }
 @media (max-width: 1400px) { .overall { display: none; } }
 @media (max-width: 1000px) { .navlinks a { padding: 6px 5px; font-size: 13px; } .brand { font-size: 16px; } }
+.pwin { border: 1.5px solid var(--line); background: var(--card); border-radius: 10px; padding: 7px 10px; }
+
+.labcard.locked-card { opacity: .55; border-style: dashed; }
+.labcard.locked-card canvas { filter: grayscale(1) blur(1px); }
+.lockbadge { position: absolute; top: 22px; left: 22px; z-index: 1; background: var(--ink); color: var(--paper); font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 999px; }
+.lockpanel { text-align: left; margin: 10px 0 60px; }
+.lockicon { font-size: 40px; line-height: 1; margin-bottom: 8px; }
+.level.fixed { opacity: .9; }
+.level button:disabled { opacity: .35; cursor: not-allowed; }

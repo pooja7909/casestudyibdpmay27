@@ -41,7 +41,8 @@ The teacher signs in to a dashboard with a password, generates codes and hands t
 You don’t need any email or Authentication settings in Supabase.
 
 ## 3. Use it
-- **Teacher:** open the site and go to **Dashboard**. Enter your password, then generate codes, for example 25 codes with the group label “HL Y2”.
+- **Teacher:** open the site and go to **Dashboard**. Enter your password, then generate codes, choosing **SL or HL** for each batch (for example 25 HL codes with the group label “HL Y2”).
+  - SL codes lock the HL-only labs (GANs, hybrid models), HL-only quiz questions and HL glossary terms, and the student can’t switch to HL. Click a code’s SL/HL badge to change its level.
   - Use **Copy list for a spreadsheet** and add the students’ names in your own file.
   - **View work** shows everything a student has done: predictions, evidence, critiques, quiz results, memo and AI-use log.
 - **Students:** open the site and click **My code**. They type their code, for example `K7PQ-M42X`, and their work then saves automatically. On any device they enter the same code to continue. On shared computers they press **Finish and leave**.

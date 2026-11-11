@@ -4,7 +4,7 @@ const CLOUD = (() => {
   const cfg = window.LAB_CONFIG || {};
   const url = (cfg.SUPABASE_URL || '').replace(/\/+$/, ''), key = cfg.SUPABASE_KEY || cfg.SUPABASE_ANON_KEY || '';
   const enabled = !!(url && key);
-  const S = { code: null, status: enabled ? 'signed-out' : 'local', pendingLocal: false, teacher: false };
+  const S = { code: null, level: null, status: enabled ? 'signed-out' : 'local', pendingLocal: false, teacher: false };
   const subs = []; let timer = null, saving = false, again = false;
   const emit = () => subs.forEach(f => f(S));
   const setStatus = (s) => { S.status = s; emit(); };
@@ -37,11 +37,11 @@ const CLOUD = (() => {
   async function enter(code) {
     const r = await rpc('lab_student_load', { p_code: code });
     if (!r.ok) return r;
-    S.code = r.code; ss.set('dvl:code', r.code);
+    S.code = r.code; S.level = r.level === 'SL' ? 'SL' : 'HL'; ss.set('dvl:code', r.code);
     store.useAccount(r.code, r.data || {});
     if (!store.get('name')) store.set('name', r.code);
     S.pendingLocal = Object.keys(store.localData()).some(k => k !== 'level');
-    setStatus('saved'); route();
+    setStatus('saved'); setLevel(S.level, true);
     return r;
   }
   async function push() {
@@ -57,28 +57,30 @@ const CLOUD = (() => {
   async function leave() {
     clearTimeout(timer); if (S.code) await push();
     const c = S.code; S.code = null; ss.set('dvl:code', null); if (c) store.forget(c);
-    store.useLocal(); S.pendingLocal = false; setStatus('signed-out'); route();
+    S.level = null; store.useLocal(); S.pendingLocal = false; setStatus('signed-out'); setLevel(store.get('level') || 'HL', true);
   }
   function mergeLocal(keep) {
     if (keep) { const loc = store.localData(); for (const [k, v] of Object.entries(loc)) { const cur = store.get(k); if (k !== 'name' && (cur == null || cur === '')) store.set(k, v); } }
     store.clearLocal(); S.pendingLocal = false; emit(); route();
   }
 
-  // ----- teacher -----
-  const tpw = () => ss.get('dvl:tpw');
-  async function teacherLogin(pw) { const r = await rpc('lab_teacher_login', { p_password: pw }); if (r.ok) { ss.set('dvl:tpw', pw); S.teacher = true; emit(); } return r; }
-  function teacherLogout() { ss.set('dvl:tpw', null); S.teacher = false; emit(); }
+  // ----- teacher (the browser keeps only a 3-hour session key, never the password) -----
+  const tok = () => ss.get('dvl:ttok');
+  async function teacherLogin(pw) { const r = await rpc('lab_teacher_login', { p_password: pw }); if (r.ok) { ss.set('dvl:ttok', r.token); S.teacher = true; emit(); } return r; }
+  function teacherLogout() { const t = tok(); if (t) rpc('lab_teacher_logout', { p_token: t }); ss.set('dvl:ttok', null); S.teacher = false; emit(); }
   const teacher = {
-    list: () => rpc('lab_teacher_list', { p_password: tpw() }),
-    create: (n, grp) => rpc('lab_teacher_create_codes', { p_password: tpw(), p_count: n, p_group: grp }),
-    remove: (code) => rpc('lab_teacher_delete_code', { p_password: tpw(), p_code: code }),
-    changePw: (nw) => rpc('lab_teacher_change_password', { p_password: tpw(), p_new: nw }).then(r => { if (r.ok) ss.set('dvl:tpw', nw); return r; })
+    list: () => rpc('lab_teacher_list', { p_token: tok() }),
+    create: (n, grp, lv) => rpc('lab_teacher_create_codes', { p_token: tok(), p_count: n, p_group: grp, p_level: lv }),
+    setLevel: (code, lv) => rpc('lab_teacher_set_level', { p_token: tok(), p_code: code, p_level: lv }),
+    remove: (code) => rpc('lab_teacher_delete_code', { p_token: tok(), p_code: code }),
+    changePw: (old, nw) => rpc('lab_teacher_change_password', { p_token: tok(), p_old: old, p_new: nw })
   };
 
   function init() {
     window.addEventListener('online', () => S.code && push());
     if (!enabled) { emit(); return; }
-    if (tpw()) S.teacher = true;
+    try { sessionStorage.removeItem('dvl:tpw'); } catch (e) { } // remove passwords kept by the older version
+    if (tok()) S.teacher = true;
     const c = ss.get('dvl:code');
     if (c) enter(c).then(r => { if (!r.ok) { ss.set('dvl:code', null); setStatus('signed-out'); } });
     else emit();
@@ -86,7 +88,7 @@ const CLOUD = (() => {
   return { enabled, S, init, queue, push, enter, leave, mergeLocal, teacherLogin, teacherLogout, teacher, on: (f) => subs.push(f) };
 })();
 
-const ERR = { unknown_code: 'That code was not found. Check it with your teacher (letters and numbers, like K7PQ-M42X).', wrong_password: 'Wrong password.', locked: 'Too many wrong attempts. Try again in 15 minutes.', no_password_set: 'No teacher password has been set yet. Run the lab_set_password line from schema.sql in Supabase.', network: 'Could not reach the database. Check the SUPABASE_URL in config.js, and that your Supabase project is not paused.', too_short: 'The new password must be at least 8 characters.' };
+const ERR = { unknown_code: 'That code was not found. Check it with your teacher (letters and numbers, like K7PQ-M42X).', wrong_password: 'Wrong password.', locked: 'Too many wrong attempts. Try again in 15 minutes.', no_password_set: 'No teacher password has been set yet. Run the lab_set_password line from schema.sql in Supabase.', network: 'Could not reach the database. Check the SUPABASE_URL in config.js, and that your Supabase project is not paused.', too_short: 'The new password must be at least 10 characters.', session_expired: 'Your dashboard session has ended. Please enter your password again.' };
 const errText = (r) => (ERR[r.error] || r.error || 'Something went wrong.') + (r.detail ? ` (${r.detail})` : '');
 
 // ---------- header chip ----------
@@ -142,8 +144,9 @@ function renderDashboard() {
   if (!CLOUD.enabled) { wrap.append(h('section', { class: 'panel', style: 'margin-top:18px' }, h('p', {}, 'Connect the database first (see README).'))); return; }
   if (!CLOUD.S.teacher) {
     const pw = h('input', { id: 't-pw', type: 'password', autocomplete: 'current-password' }); const msg = h('p', { class: 'formmsg' });
-    const f = h('form', { class: 'panel form', style: 'margin-top:18px;max-width:520px' }, h('label', { class: 'field', for: 't-pw' }, h('span', {}, 'Teacher password'), pw), h('button', { class: 'btn', type: 'submit' }, 'Open dashboard'), msg);
-    f.addEventListener('submit', async (e) => { e.preventDefault(); msg.className = 'formmsg'; msg.textContent = 'Checking…'; const r = await CLOUD.teacherLogin(pw.value); if (r.ok) route(); else { msg.className = 'formmsg bad'; msg.textContent = errText(r); } });
+    const f = h('form', { class: 'panel form', style: 'margin-top:18px;max-width:520px' }, h('label', { class: 'field', for: 't-pw' }, h('span', {}, 'Teacher password'), pw), h('button', { class: 'btn', type: 'submit' }, 'Open dashboard'), msg,
+      h('p', { class: 'small muted' }, 'Don’t let the browser save this password on shared or classroom computers. Press “Lock dashboard” when you finish.'));
+    f.addEventListener('submit', async (e) => { e.preventDefault(); msg.className = 'formmsg'; msg.textContent = 'Checking…'; const r = await CLOUD.teacherLogin(pw.value); pw.value = ''; if (r.ok) route(); else { msg.className = 'formmsg bad'; msg.textContent = errText(r); } });
     wrap.append(f); setTimeout(() => pw.focus(), 0); return;
   }
   const msg = h('p', { class: 'formmsg' }); const say = (t, bad) => { msg.className = 'formmsg ' + (bad ? 'bad' : 'ok'); msg.textContent = t; };
@@ -151,12 +154,13 @@ function renderDashboard() {
   let rows = [], filter = store.get('dash:grp') || 'All';
   const nIn = h('input', { id: 'c-n', type: 'number', min: 1, max: 60, value: 25, style: 'width:90px' });
   const gIn = h('input', { id: 'c-g', type: 'text', placeholder: 'Group label, e.g. HL Y2 (no names)', style: 'min-width:260px' });
-  const createForm = h('form', { class: 'row', style: 'align-items:end' }, h('label', { class: 'field', for: 'c-n' }, h('span', {}, 'How many codes'), nIn), h('label', { class: 'field', for: 'c-g', style: 'flex:1' }, h('span', {}, 'Group'), gIn), h('button', { class: 'btn', type: 'submit' }, 'Generate codes'));
+  const lvIn = h('select', { id: 'c-l' }, h('option', { value: 'HL' }, 'HL'), h('option', { value: 'SL' }, 'SL'));
+  const createForm = h('form', { class: 'row', style: 'align-items:end' }, h('label', { class: 'field', for: 'c-n' }, h('span', {}, 'How many codes'), nIn), h('label', { class: 'field', for: 'c-l' }, h('span', {}, 'Level'), lvIn), h('label', { class: 'field', for: 'c-g', style: 'flex:1' }, h('span', {}, 'Group'), gIn), h('button', { class: 'btn', type: 'submit' }, 'Generate codes'));
   createForm.addEventListener('submit', async (e) => {
     e.preventDefault(); say('Generating…');
-    const r = await CLOUD.teacher.create(+nIn.value || 1, gIn.value.trim());
-    if (!r.ok) return say(errText(r), true);
-    say(`${r.codes.length} new codes created.`);
+    const r = await CLOUD.teacher.create(+nIn.value || 1, gIn.value.trim(), lvIn.value);
+    if (!r.ok) { if (r.error === 'session_expired') { CLOUD.teacherLogout(); route(); return; } return say(errText(r), true); }
+    say(`${r.codes.length} new ${lvIn.value} codes created.`);
     const txt = r.codes.join('\n');
     newBox.innerHTML = '';
     newBox.append(h('div', { class: 'q', style: 'margin-top:12px' }, h('b', {}, 'New codes: write a student’s name next to each one in your own list.'),
@@ -182,16 +186,20 @@ function renderDashboard() {
     listBox.append(h('div', { class: 'section-head' }, h('h2', {}, `Codes (${shown.length})`),
       h('div', { class: 'row' }, chipGroup(groups.map(g => [g, g]), filter, v => { filter = v; store.set('dash:grp', v); draw(); }),
         h('button', { class: 'btn ghost small', onclick: load }, 'Refresh'),
-        h('button', { class: 'btn ghost small', onclick: (ev) => copyText('Code\tGroup\tStudent name\n' + shown.map(r => `${r.code}\t${r.grp || ''}\t`).join('\n'), ev.currentTarget, 'Copy list for a spreadsheet') }, 'Copy list for a spreadsheet'))));
+        h('button', { class: 'btn ghost small', onclick: (ev) => copyText('Code\tLevel\tGroup\tStudent name\n' + shown.map(r => `${r.code}\t${r.level || 'HL'}\t${r.grp || ''}\t`).join('\n'), ev.currentTarget, 'Copy list for a spreadsheet') }, 'Copy list for a spreadsheet'))));
     if (!shown.length) { listBox.append(h('p', { class: 'muted' }, 'No codes yet. Generate some above.')); return; }
-    const table = h('table', { class: 'exam dash' }, h('tr', {}, ...['Code', 'Group', 'Last saved', 'Stages', 'Predictions', 'Evidence', 'AI mistakes found', 'Quiz', 'Sure but wrong', 'Memo', 'AI log', ''].map(t => h('th', {}, t))));
+    const table = h('table', { class: 'exam dash' }, h('tr', {}, ...['Code', 'Level', 'Group', 'Last saved', 'Stages', 'Predictions', 'Evidence', 'AI mistakes found', 'Quiz', 'Sure but wrong', 'Memo', 'AI log', ''].map(t => h('th', {}, t))));
     shown.forEach(r => {
       const d = r.data || {}, s = stat(d);
       const del = h('button', { class: 'btn ghost small', onclick: async () => {
         if (del.dataset.arm !== '1') { del.dataset.arm = '1'; del.textContent = 'Click again to delete'; setTimeout(() => { del.dataset.arm = ''; del.textContent = 'Delete'; }, 3000); return; }
         const x = await CLOUD.teacher.remove(r.code); if (!x.ok) say(errText(x), true); else { say(`Deleted ${r.code} and its work.`); load(); } } }, 'Delete');
-      table.append(h('tr', {}, h('td', {}, h('b', { class: 'num' }, r.code)), h('td', { class: 'small' }, r.grp || '—'), h('td', { class: 'small' }, r.updated_at ? new Date(r.updated_at).toLocaleString() : 'not used yet'),
-        h('td', { class: 'num' }, `${s.stages}/${total}`), h('td', { class: 'num' }, `${s.preds}/8`), h('td', { class: 'num' }, `${s.ev}/6`),
+      const lv = r.level || 'HL';
+      const lvBtn = h('button', { class: 'badge ' + (lv === 'SL' ? 'sl' : 'hl'), style: 'border:0;cursor:pointer', title: 'Click to switch level', onclick: async () => {
+        const nx = lv === 'SL' ? 'HL' : 'SL'; const x = await CLOUD.teacher.setLevel(r.code, nx);
+        if (!x.ok) { if (x.error === 'session_expired') { CLOUD.teacherLogout(); route(); return; } say(errText(x), true); return; } r.level = nx; say(`${r.code} is now ${nx}. The student sees the change next time they enter their code.`); draw(); } }, lv);
+      table.append(h('tr', {}, h('td', {}, h('b', { class: 'num' }, r.code)), h('td', {}, lvBtn), h('td', { class: 'small' }, r.grp || '—'), h('td', { class: 'small' }, r.updated_at ? new Date(r.updated_at).toLocaleString() : 'not used yet'),
+        h('td', { class: 'num' }, `${s.stages}/${lv === 'SL' ? total - 2 * STAGES.length : total}`), h('td', { class: 'num' }, `${s.preds}/${lv === 'SL' ? 6 : 8}`), h('td', { class: 'num' }, `${s.ev}/6`),
         h('td', { class: 'num' }, s.spot[1] ? `${s.spot[0]}/${s.spot[1]}${s.spot[2] ? ` (+${s.spot[2]} false)` : ''}` : '—'),
         h('td', { class: 'num' }, s.mcqN ? `${s.right}/${s.mcqN}` : '—'), h('td', { class: 'num' + (s.sureWrong ? ' warnc' : '') }, String(s.sureWrong)),
         h('td', { class: 'num' }, `${s.memo}/5`), h('td', { class: 'num' }, String(s.ai)),
@@ -210,17 +218,18 @@ function renderDashboard() {
   async function load() {
     listBox.innerHTML = '<p class="muted">Loading…</p>';
     const r = await CLOUD.teacher.list();
-    if (!r.ok) { if (r.error === 'wrong_password') { CLOUD.teacherLogout(); route(); return; } listBox.innerHTML = ''; listBox.append(h('p', { class: 'formmsg bad' }, errText(r))); return; }
+    if (!r.ok) { if (r.error === 'session_expired') { CLOUD.teacherLogout(); route(); return; } listBox.innerHTML = ''; listBox.append(h('p', { class: 'formmsg bad' }, errText(r))); return; }
     rows = r.rows; draw();
   }
-  const npw = h('input', { id: 't-npw', type: 'password', autocomplete: 'new-password', placeholder: 'New password (8+ characters)' });
-  const pwForm = h('form', { class: 'row' }, npw, h('button', { class: 'btn ghost small', type: 'submit' }, 'Change password'));
-  pwForm.addEventListener('submit', async (e) => { e.preventDefault(); const r = await CLOUD.teacher.changePw(npw.value); say(r.ok ? 'Password changed.' : errText(r), !r.ok); npw.value = ''; });
+  const opw = h('input', { id: 't-opw', type: 'password', autocomplete: 'current-password', placeholder: 'Current password', class: 'pwin' });
+  const npw = h('input', { id: 't-npw', type: 'password', autocomplete: 'new-password', placeholder: 'New password (10+ characters)', class: 'pwin' });
+  const pwForm = h('form', { class: 'row' }, opw, npw, h('button', { class: 'btn ghost small', type: 'submit' }, 'Change password'));
+  pwForm.addEventListener('submit', async (e) => { e.preventDefault(); const r = await CLOUD.teacher.changePw(opw.value, npw.value); opw.value = ''; npw.value = ''; if (r.ok) { CLOUD.teacherLogout(); route(); return; } say(errText(r), true); });
   wrap.append(
     h('section', { class: 'panel', style: 'margin-top:18px' }, h('h2', { style: 'margin-bottom:6px' }, 'Generate student codes'),
       h('p', { class: 'small muted', style: 'margin-bottom:12px' }, 'The database stores only codes, group labels and lab work. Keep your own list of which student has which code.'), createForm, newBox, msg),
     h('section', { class: 'panel', style: 'margin-top:18px' }, listBox), viewBox,
-    h('section', { class: 'panel', style: 'margin-top:18px' }, h('div', { class: 'row', style: 'justify-content:space-between' }, pwForm, h('button', { class: 'btn ghost small', onclick: () => { CLOUD.teacherLogout(); route(); } }, 'Lock dashboard'))));
+    h('section', { class: 'panel', style: 'margin-top:18px' }, h('div', { class: 'row', style: 'justify-content:space-between' }, pwForm, h('button', { class: 'btn ghost small', onclick: () => { CLOUD.teacherLogout(); route(); } }, 'Lock dashboard (sign out)'))));
   load();
 }
 

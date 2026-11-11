@@ -10,12 +10,24 @@ drop function if exists public.is_teacher(), public.teaches(uuid), public.class_
 
 create extension if not exists pgcrypto with schema extensions;
 
+-- remove older password-per-call versions of the teacher functions (safe if they don't exist)
+drop function if exists public.lab_teacher_create_codes(text, int, text);
+drop function if exists public.lab_teacher_create_codes(text, int, text, text);
+drop function if exists public.lab_teacher_list(text);
+drop function if exists public.lab_teacher_delete_code(text, text);
+drop function if exists public.lab_teacher_change_password(text, text);
+
 -- ---------- tables (no personal data: only codes, group labels and lab work) ----------
 create table if not exists public.lab_codes (
   code        text primary key,
   grp         text not null default '',
   created_at  timestamptz not null default now()
 );
+-- level: 'SL' or 'HL', set by the teacher; SL students cannot open HL-only labs.
+alter table public.lab_codes add column if not exists level text not null default 'HL';
+alter table public.lab_codes drop constraint if exists lab_codes_level_check;
+alter table public.lab_codes add constraint lab_codes_level_check check (level in ('SL', 'HL'));
+
 create table if not exists public.lab_work (
   code        text primary key references public.lab_codes(code) on delete cascade,
   data        jsonb not null default '{}'::jsonb,
@@ -28,11 +40,17 @@ create table if not exists public.lab_teacher (
   locked_until  timestamptz
 );
 
+create table if not exists public.lab_sessions (
+  token       text primary key,
+  expires_at  timestamptz not null
+);
+
 -- Nobody can read or write these tables directly from the website:
 alter table public.lab_codes   enable row level security;
 alter table public.lab_work    enable row level security;
 alter table public.lab_teacher enable row level security;
-revoke all on public.lab_codes, public.lab_work, public.lab_teacher from anon, authenticated;
+alter table public.lab_sessions enable row level security;
+revoke all on public.lab_codes, public.lab_work, public.lab_teacher, public.lab_sessions from anon, authenticated;
 -- …the website can only call the functions below.
 
 -- ---------- helpers ----------
@@ -76,7 +94,7 @@ declare c text := lab_norm(p_code); w lab_work%rowtype;
 begin
   if not exists (select 1 from lab_codes where code = c) then return jsonb_build_object('ok', false, 'error', 'unknown_code'); end if;
   select * into w from lab_work where code = c;
-  return jsonb_build_object('ok', true, 'code', c, 'data', coalesce(w.data, '{}'::jsonb), 'updated_at', w.updated_at);
+  return jsonb_build_object('ok', true, 'code', c, 'level', (select level from lab_codes where code = c), 'data', coalesce(w.data, '{}'::jsonb), 'updated_at', w.updated_at);
 end $$;
 
 create or replace function public.lab_student_save(p_code text, p_data jsonb) returns jsonb
@@ -90,25 +108,44 @@ begin
   return jsonb_build_object('ok', true, 'updated_at', ts);
 end $$;
 
--- ---------- teacher functions (all need the teacher password) ----------
+-- ---------- teacher functions ----------
+-- Login checks the password once and returns a random session key valid for 3 hours.
+-- The dashboard keeps only that key, never the password.
 create or replace function public.lab_teacher_login(p_password text) returns jsonb
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = public, extensions as $$
+declare tok text;
 begin
   if not exists (select 1 from lab_teacher) then return jsonb_build_object('ok', false, 'error', 'no_password_set'); end if;
   if exists (select 1 from lab_teacher where locked_until > now()) then return jsonb_build_object('ok', false, 'error', 'locked'); end if;
-  if lab_teacher_ok(p_password) then return jsonb_build_object('ok', true); end if;
-  return jsonb_build_object('ok', false, 'error', 'wrong_password');
+  if not lab_teacher_ok(p_password) then return jsonb_build_object('ok', false, 'error', 'wrong_password'); end if;
+  delete from lab_sessions where expires_at < now();
+  tok := encode(gen_random_bytes(32), 'hex');
+  insert into lab_sessions (token, expires_at) values (tok, now() + interval '3 hours');
+  return jsonb_build_object('ok', true, 'token', tok);
 end $$;
 
-create or replace function public.lab_teacher_create_codes(p_password text, p_count int, p_group text) returns jsonb
+create or replace function public.lab_session_ok(p_token text) returns boolean
+language sql security definer set search_path = public stable as $$
+  select exists (select 1 from lab_sessions where token = p_token and expires_at > now())
+$$;
+
+create or replace function public.lab_teacher_logout(p_token text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  delete from lab_sessions where token = p_token or expires_at < now();
+  return jsonb_build_object('ok', true);
+end $$;
+
+create or replace function public.lab_teacher_create_codes(p_token text, p_count int, p_group text, p_level text) returns jsonb
 language plpgsql security definer set search_path = public as $$
 declare out text[] := '{}'; c text; n int := least(greatest(coalesce(p_count, 1), 1), 60);
+  lv text := case when upper(coalesce(p_level, '')) = 'SL' then 'SL' else 'HL' end;
 begin
-  if not lab_teacher_ok(p_password) then return jsonb_build_object('ok', false, 'error', 'wrong_password'); end if;
+  if not lab_session_ok(p_token) then return jsonb_build_object('ok', false, 'error', 'session_expired'); end if;
   while coalesce(array_length(out, 1), 0) < n loop
     c := lab_gen_code();
     begin
-      insert into lab_codes (code, grp) values (c, left(coalesce(trim(p_group), ''), 60));
+      insert into lab_codes (code, grp, level) values (c, left(coalesce(trim(p_group), ''), 60), lv);
       out := out || c;
     exception when unique_violation then null; -- extremely rare: try again
     end;
@@ -116,29 +153,41 @@ begin
   return jsonb_build_object('ok', true, 'codes', to_jsonb(out));
 end $$;
 
-create or replace function public.lab_teacher_list(p_password text) returns jsonb
+create or replace function public.lab_teacher_list(p_token text) returns jsonb
 language plpgsql security definer set search_path = public as $$
 begin
-  if not lab_teacher_ok(p_password) then return jsonb_build_object('ok', false, 'error', 'wrong_password'); end if;
+  if not lab_session_ok(p_token) then return jsonb_build_object('ok', false, 'error', 'session_expired'); end if;
   return jsonb_build_object('ok', true, 'rows', coalesce((
-    select jsonb_agg(jsonb_build_object('code', c.code, 'grp', c.grp, 'created_at', c.created_at, 'updated_at', w.updated_at, 'data', coalesce(w.data, '{}'::jsonb)) order by c.grp, c.created_at, c.code)
+    select jsonb_agg(jsonb_build_object('code', c.code, 'grp', c.grp, 'level', c.level, 'created_at', c.created_at, 'updated_at', w.updated_at, 'data', coalesce(w.data, '{}'::jsonb)) order by c.grp, c.created_at, c.code)
     from lab_codes c left join lab_work w on w.code = c.code), '[]'::jsonb));
 end $$;
 
-create or replace function public.lab_teacher_delete_code(p_password text, p_code text) returns jsonb
+create or replace function public.lab_teacher_delete_code(p_token text, p_code text) returns jsonb
 language plpgsql security definer set search_path = public as $$
 begin
-  if not lab_teacher_ok(p_password) then return jsonb_build_object('ok', false, 'error', 'wrong_password'); end if;
+  if not lab_session_ok(p_token) then return jsonb_build_object('ok', false, 'error', 'session_expired'); end if;
   delete from lab_codes where code = lab_norm(p_code);
   return jsonb_build_object('ok', true);
 end $$;
 
-create or replace function public.lab_teacher_change_password(p_password text, p_new text) returns jsonb
+create or replace function public.lab_teacher_set_level(p_token text, p_code text, p_level text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  if not lab_session_ok(p_token) then return jsonb_build_object('ok', false, 'error', 'session_expired'); end if;
+  if upper(coalesce(p_level, '')) not in ('SL', 'HL') then return jsonb_build_object('ok', false, 'error', 'bad_level'); end if;
+  update lab_codes set level = upper(p_level) where code = lab_norm(p_code);
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- Changing the password needs the current password too, and signs out every session.
+create or replace function public.lab_teacher_change_password(p_token text, p_old text, p_new text) returns jsonb
 language plpgsql security definer set search_path = public, extensions as $$
 begin
-  if not lab_teacher_ok(p_password) then return jsonb_build_object('ok', false, 'error', 'wrong_password'); end if;
-  if length(coalesce(p_new, '')) < 8 then return jsonb_build_object('ok', false, 'error', 'too_short'); end if;
+  if not lab_session_ok(p_token) then return jsonb_build_object('ok', false, 'error', 'session_expired'); end if;
+  if not lab_teacher_ok(p_old) then return jsonb_build_object('ok', false, 'error', 'wrong_password'); end if;
+  if length(coalesce(p_new, '')) < 10 then return jsonb_build_object('ok', false, 'error', 'too_short'); end if;
   update lab_teacher set pw_hash = crypt(p_new, gen_salt('bf', 10)) where id = 1;
+  delete from lab_sessions;
   return jsonb_build_object('ok', true);
 end $$;
 
@@ -149,21 +198,23 @@ begin
   if length(coalesce(p_new, '')) < 8 then raise exception 'Password must be at least 8 characters'; end if;
   insert into lab_teacher (id, pw_hash) values (1, crypt(p_new, gen_salt('bf', 10)))
     on conflict (id) do update set pw_hash = excluded.pw_hash, failed = 0, locked_until = null;
+  delete from lab_sessions; -- signs out every open dashboard
   return 'Teacher password set.';
 end $$;
 
 -- ---------- who may call what ----------
-revoke execute on function public.lab_norm(text), public.lab_gen_code(), public.lab_teacher_ok(text), public.lab_set_password(text),
-  public.lab_student_load(text), public.lab_student_save(text, jsonb), public.lab_teacher_login(text),
-  public.lab_teacher_create_codes(text, int, text), public.lab_teacher_list(text), public.lab_teacher_delete_code(text, text),
-  public.lab_teacher_change_password(text, text) from public, anon, authenticated;
+revoke execute on function public.lab_norm(text), public.lab_gen_code(), public.lab_teacher_ok(text), public.lab_session_ok(text),
+  public.lab_set_password(text), public.lab_student_load(text), public.lab_student_save(text, jsonb), public.lab_teacher_login(text),
+  public.lab_teacher_logout(text), public.lab_teacher_create_codes(text, int, text, text), public.lab_teacher_list(text),
+  public.lab_teacher_delete_code(text, text), public.lab_teacher_set_level(text, text, text), public.lab_teacher_change_password(text, text, text) from public, anon, authenticated;
 grant execute on function public.lab_student_load(text), public.lab_student_save(text, jsonb),
-  public.lab_teacher_login(text), public.lab_teacher_create_codes(text, int, text), public.lab_teacher_list(text),
-  public.lab_teacher_delete_code(text, text), public.lab_teacher_change_password(text, text)
+  public.lab_teacher_login(text), public.lab_teacher_logout(text), public.lab_teacher_create_codes(text, int, text, text),
+  public.lab_teacher_list(text), public.lab_teacher_delete_code(text, text), public.lab_teacher_set_level(text, text, text),
+  public.lab_teacher_change_password(text, text, text)
   to anon, authenticated;
 
 -- ---------- NEXT STEP: set your teacher password ----------
--- In a NEW query, run this line with your own password (at least 8 characters):
+-- In a NEW query, run this line with your own password (at least 8 characters; 12+ recommended):
 --
 --   select public.lab_set_password('choose-a-strong-password');
 --

@@ -46,7 +46,7 @@ const FLAWED = {
   8: { q: 'Use key terms to describe how Visionary Studios might create an image. [5]', s: [
     ['Noise injection is the process of removing noise from an image.', 'wrong', 'Noise injection introduces random noise as the starting point; removing it is denoising.', 'Line 37'],
     ['A segmentation map labels every pixel of an image with a class.'],
-    ['The latent space is the set of real images the discriminator compares against.', 'wrong', 'The latent space is a compressed, organised version of the data (VAEs). The discriminator compares against the training dataset.', 'Lines 51–52, 65–66'],
+    ['A segmentation map is the input used for unconditional image generation.', 'wrong', 'Unconditional generation has no predefined input. A segmentation map is an input for conditional generation.', 'Lines 24–25, 30–31'],
     ['Image-to-image translation can turn a sketch into a realistic rendering.'],
     ['Style adherence means the same character looks identical across images.', 'wrong', 'That is character consistency. Style adherence means matching the style or theme in the prompt.', 'Lines 91–95']] }
 };

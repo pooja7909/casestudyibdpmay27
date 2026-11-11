@@ -716,7 +716,7 @@ SIMS.glossary = (root, ctx) => {
     mbox.innerHTML = ''; mbox.append(h('div', { class: 'match' }, L, R)); upd();
   };
   root.append(
-    h('div', { class: 'row', style: 'margin-top:14px;justify-content:space-between' }, search, chipGroup([['All', 'All'], ['SL', 'SL + HL'], ['HL', 'HL only']], filter, v => { filter = v; draw(); })),
+    h('div', { class: 'row', style: 'margin-top:14px;justify-content:space-between' }, search, lvl === 'SL' ? h('span', { class: 'small muted' }, 'Showing SL + HL terms (HL-only terms are locked in SL mode)') : chipGroup([['All', 'All'], ['SL', 'SL + HL'], ['HL', 'HL only']], filter, v => { filter = v; draw(); })),
     h('div', { style: 'margin-top:14px' }, list),
     h('div', { class: 'grid2', style: 'margin-top:24px' },
       h('div', {}, h('h3', { style: 'margin-bottom:10px' }, 'Flashcards'), card, h('div', { class: 'row', style: 'margin-top:10px' },

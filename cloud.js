@@ -10,12 +10,24 @@ const CLOUD = (() => {
   const setStatus = (s) => { S.status = s; emit(); };
   const ss = { get: (k) => { try { return sessionStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { v == null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch (e) { } } };
 
+  // Spot common config.js mistakes before calling the database.
+  function configProblem() {
+    if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url)) return `config.js: SUPABASE_URL should look like https://abcd1234.supabase.co (it is “${url}”).`;
+    if (/[^A-Za-z0-9._-]/.test(key)) return 'config.js: the key contains spaces or invalid characters (such as … or quotes). Paste the real publishable key from Supabase → Project Settings → API Keys.';
+    if (/^sb_secret_/.test(key)) return 'config.js: that is a SECRET key. Remove it now and use the publishable key (sb_publishable_…).';
+    if (!/^(sb_publishable_|eyJ)/.test(key)) return 'config.js: the key should start with sb_publishable_ (or eyJ for a legacy anon key).';
+    if (/^sb_publishable_/.test(key) && key.length < 30) return 'config.js: the key looks too short. Copy the whole publishable key.';
+    return null;
+  }
   async function rpc(fn, args) {
+    const bad = configProblem(); if (bad) return { ok: false, error: bad };
     const headers = { 'Content-Type': 'application/json', apikey: key };
     if (key.startsWith('eyJ')) headers.Authorization = 'Bearer ' + key; // legacy anon key
     let res;
     try { res = await fetch(`${url}/rest/v1/rpc/${fn}`, { method: 'POST', headers, body: JSON.stringify(args) }); }
-    catch (e) { return { ok: false, error: 'network' }; }
+    catch (e) { return { ok: false, error: 'network', detail: e && e.message }; }
+    if (res.status === 404) return { ok: false, error: 'Database function not found (HTTP 404). Run supabase/schema.sql in the Supabase SQL Editor, then try again.' };
+    if (res.status === 401 || res.status === 403) return { ok: false, error: `The database refused the key (HTTP ${res.status}). Check SUPABASE_ANON_KEY in config.js is your publishable key, and that schema.sql ran fully.` };
     let body = null; try { body = await res.json(); } catch (e) { }
     if (!res.ok) return { ok: false, error: (body && (body.message || body.hint)) || `HTTP ${res.status}` };
     return body || { ok: false, error: 'empty' };
@@ -74,8 +86,8 @@ const CLOUD = (() => {
   return { enabled, S, init, queue, push, enter, leave, mergeLocal, teacherLogin, teacherLogout, teacher, on: (f) => subs.push(f) };
 })();
 
-const ERR = { unknown_code: 'That code was not found. Check it with your teacher (letters and numbers, like K7PQ-M42X).', wrong_password: 'Wrong password.', locked: 'Too many wrong attempts. Try again in 15 minutes.', no_password_set: 'No teacher password has been set yet. Run the lab_set_password line from schema.sql in Supabase.', network: 'Could not reach the database. Check your internet connection.', too_short: 'The new password must be at least 8 characters.' };
-const errText = (r) => ERR[r.error] || r.error || 'Something went wrong.';
+const ERR = { unknown_code: 'That code was not found. Check it with your teacher (letters and numbers, like K7PQ-M42X).', wrong_password: 'Wrong password.', locked: 'Too many wrong attempts. Try again in 15 minutes.', no_password_set: 'No teacher password has been set yet. Run the lab_set_password line from schema.sql in Supabase.', network: 'Could not reach the database. Check the SUPABASE_URL in config.js, and that your Supabase project is not paused.', too_short: 'The new password must be at least 8 characters.' };
+const errText = (r) => (ERR[r.error] || r.error || 'Something went wrong.') + (r.detail ? ` (${r.detail})` : '');
 
 // ---------- header chip ----------
 function syncChip() {

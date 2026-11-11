@@ -4,5 +4,5 @@
 
    window.LAB_CONFIG = {
      SUPABASE_URL: 'https://wxrssmdkxxgrhmximpkd.supabase.co',
-     SUPABASE_ANON_KEY: 'sb_publishable_…your full key…'
+     SUPABASE_ANON_KEY: 'sb_publishable_mNDqduS0yAVrc_yVR35AEA_yhQlsp6b'
    };

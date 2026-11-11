@@ -1,111 +1,170 @@
--- Diffuse Vision Lab — PostgreSQL schema for Supabase
--- Run this once in Supabase: Dashboard → SQL Editor → New query → paste → Run.
+-- Diffuse Vision Lab — PostgreSQL schema (code-based, no emails, no student names)
+-- Run once in Supabase: SQL Editor → New query → paste everything → Run.
+-- Then set your teacher password (see the bottom of this file).
 
--- ---------- tables ----------
-create table if not exists public.teachers (
-  user_id uuid primary key references auth.users on delete cascade
-);
+-- ---------- remove the earlier email-based version, if you ran it ----------
+drop trigger if exists on_auth_user_created on auth.users;
+drop function if exists public.handle_new_user() cascade;
+drop table if exists public.progress, public.profiles, public.classes, public.teachers cascade;
+drop function if exists public.is_teacher(), public.teaches(uuid), public.class_exists(text) cascade;
 
-create table if not exists public.classes (
+create extension if not exists pgcrypto with schema extensions;
+
+-- ---------- tables (no personal data: only codes, group labels and lab work) ----------
+create table if not exists public.lab_codes (
   code        text primary key,
-  name        text not null,
-  teacher_id  uuid not null references auth.users on delete cascade,
+  grp         text not null default '',
   created_at  timestamptz not null default now()
 );
-
-create table if not exists public.profiles (
-  id            uuid primary key references auth.users on delete cascade,
-  display_name  text not null,
-  email         text,
-  class_code    text references public.classes(code) on delete set null,
-  created_at    timestamptz not null default now()
-);
-
--- One row per student: all their lab work as JSON (predictions, evidence, answers, memo, AI log…)
-create table if not exists public.progress (
-  user_id     uuid primary key references auth.users on delete cascade,
+create table if not exists public.lab_work (
+  code        text primary key references public.lab_codes(code) on delete cascade,
   data        jsonb not null default '{}'::jsonb,
   updated_at  timestamptz not null default now()
 );
+create table if not exists public.lab_teacher (
+  id            int primary key default 1 check (id = 1),
+  pw_hash       text not null,
+  failed        int not null default 0,
+  locked_until  timestamptz
+);
 
-alter table public.teachers enable row level security;
-alter table public.classes  enable row level security;
-alter table public.profiles enable row level security;
-alter table public.progress enable row level security;
+-- Nobody can read or write these tables directly from the website:
+alter table public.lab_codes   enable row level security;
+alter table public.lab_work    enable row level security;
+alter table public.lab_teacher enable row level security;
+revoke all on public.lab_codes, public.lab_work, public.lab_teacher from anon, authenticated;
+-- …the website can only call the functions below.
 
--- ---------- helper functions (security definer avoids policy recursion) ----------
-create or replace function public.is_teacher() returns boolean
-language sql security definer set search_path = public stable as $$
-  select exists (select 1 from teachers where user_id = auth.uid())
+-- ---------- helpers ----------
+create or replace function public.lab_norm(p text) returns text
+language sql immutable as $$
+  select case when length(x) = 8 then substr(x, 1, 4) || '-' || substr(x, 5, 4) else x end
+  from (select upper(regexp_replace(coalesce(p, ''), '[^A-Za-z0-9]', '', 'g')) as x) s
 $$;
 
-create or replace function public.teaches(student uuid) returns boolean
-language sql security definer set search_path = public stable as $$
-  select exists (
-    select 1 from profiles p join classes c on c.code = p.class_code
-    where p.id = student and c.teacher_id = auth.uid()
-  )
-$$;
-
--- Lets the sign-up form check a class code without exposing the list of classes.
-create or replace function public.class_exists(c text) returns boolean
-language sql security definer set search_path = public stable as $$
-  select exists (select 1 from classes where code = upper(trim(c)))
-$$;
-grant execute on function public.class_exists(text) to anon, authenticated;
-
--- ---------- policies ----------
-drop policy if exists "teachers read self" on public.teachers;
-create policy "teachers read self" on public.teachers
-  for select to authenticated using (user_id = auth.uid());
-
-drop policy if exists "teacher reads own classes" on public.classes;
-create policy "teacher reads own classes" on public.classes
-  for select to authenticated using (teacher_id = auth.uid());
-drop policy if exists "teacher creates classes" on public.classes;
-create policy "teacher creates classes" on public.classes
-  for insert to authenticated with check (teacher_id = auth.uid() and public.is_teacher());
-drop policy if exists "teacher deletes own classes" on public.classes;
-create policy "teacher deletes own classes" on public.classes
-  for delete to authenticated using (teacher_id = auth.uid());
-
-drop policy if exists "read own or taught profiles" on public.profiles;
-create policy "read own or taught profiles" on public.profiles
-  for select to authenticated using (id = auth.uid() or public.teaches(id));
-drop policy if exists "update own profile" on public.profiles;
-create policy "update own profile" on public.profiles
-  for update to authenticated using (id = auth.uid()) with check (id = auth.uid());
--- Students may change only their display name (not their class).
-revoke update on public.profiles from authenticated;
-grant update (display_name) on public.profiles to authenticated;
-
-drop policy if exists "read own or taught progress" on public.progress;
-create policy "read own or taught progress" on public.progress
-  for select to authenticated using (user_id = auth.uid() or public.teaches(user_id));
-drop policy if exists "insert own progress" on public.progress;
-create policy "insert own progress" on public.progress
-  for insert to authenticated with check (user_id = auth.uid());
-drop policy if exists "update own progress" on public.progress;
-create policy "update own progress" on public.progress
-  for update to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
-
--- ---------- create a profile automatically at sign-up ----------
-create or replace function public.handle_new_user() returns trigger
-language plpgsql security definer set search_path = public as $$
-declare cc text := upper(nullif(trim(new.raw_user_meta_data->>'class_code'), ''));
+create or replace function public.lab_gen_code() returns text
+language plpgsql volatile set search_path = public, extensions as $$
+declare a text := 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; b bytea := gen_random_bytes(8); s text := '';
 begin
-  if cc is not null and not exists (select 1 from classes where code = cc) then cc := null; end if;
-  insert into profiles (id, display_name, email, class_code)
-  values (new.id,
-          coalesce(nullif(trim(new.raw_user_meta_data->>'display_name'), ''), split_part(new.email, '@', 1)),
-          new.email, cc);
-  return new;
+  for i in 0..7 loop s := s || substr(a, (get_byte(b, i) % 32) + 1, 1); end loop;
+  return substr(s, 1, 4) || '-' || substr(s, 5, 4);
 end $$;
 
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created
-  after insert on auth.users for each row execute procedure public.handle_new_user();
+-- Checks the teacher password; locks for 15 minutes after 10 wrong attempts.
+create or replace function public.lab_teacher_ok(p_password text) returns boolean
+language plpgsql security definer set search_path = public, extensions as $$
+declare t lab_teacher%rowtype;
+begin
+  select * into t from lab_teacher where id = 1;
+  if not found then return false; end if;
+  if t.locked_until is not null and t.locked_until > now() then return false; end if;
+  if crypt(coalesce(p_password, ''), t.pw_hash) = t.pw_hash then
+    update lab_teacher set failed = 0, locked_until = null where id = 1;
+    return true;
+  end if;
+  update lab_teacher set
+    failed = case when t.failed + 1 >= 10 then 0 else t.failed + 1 end,
+    locked_until = case when t.failed + 1 >= 10 then now() + interval '15 minutes' else null end
+  where id = 1;
+  return false;
+end $$;
 
--- ---------- make yourself a teacher (run after you have signed up on the site) ----------
--- insert into public.teachers (user_id)
---   select id from auth.users where email = 'you@yourschool.org';
+-- ---------- student functions ----------
+create or replace function public.lab_student_load(p_code text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare c text := lab_norm(p_code); w lab_work%rowtype;
+begin
+  if not exists (select 1 from lab_codes where code = c) then return jsonb_build_object('ok', false, 'error', 'unknown_code'); end if;
+  select * into w from lab_work where code = c;
+  return jsonb_build_object('ok', true, 'code', c, 'data', coalesce(w.data, '{}'::jsonb), 'updated_at', w.updated_at);
+end $$;
+
+create or replace function public.lab_student_save(p_code text, p_data jsonb) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare c text := lab_norm(p_code); ts timestamptz := now();
+begin
+  if not exists (select 1 from lab_codes where code = c) then return jsonb_build_object('ok', false, 'error', 'unknown_code'); end if;
+  if pg_column_size(p_data) > 1000000 then return jsonb_build_object('ok', false, 'error', 'too_large'); end if;
+  insert into lab_work (code, data, updated_at) values (c, coalesce(p_data, '{}'::jsonb), ts)
+    on conflict (code) do update set data = excluded.data, updated_at = excluded.updated_at;
+  return jsonb_build_object('ok', true, 'updated_at', ts);
+end $$;
+
+-- ---------- teacher functions (all need the teacher password) ----------
+create or replace function public.lab_teacher_login(p_password text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  if not exists (select 1 from lab_teacher) then return jsonb_build_object('ok', false, 'error', 'no_password_set'); end if;
+  if exists (select 1 from lab_teacher where locked_until > now()) then return jsonb_build_object('ok', false, 'error', 'locked'); end if;
+  if lab_teacher_ok(p_password) then return jsonb_build_object('ok', true); end if;
+  return jsonb_build_object('ok', false, 'error', 'wrong_password');
+end $$;
+
+create or replace function public.lab_teacher_create_codes(p_password text, p_count int, p_group text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare out text[] := '{}'; c text; n int := least(greatest(coalesce(p_count, 1), 1), 60);
+begin
+  if not lab_teacher_ok(p_password) then return jsonb_build_object('ok', false, 'error', 'wrong_password'); end if;
+  while coalesce(array_length(out, 1), 0) < n loop
+    c := lab_gen_code();
+    begin
+      insert into lab_codes (code, grp) values (c, left(coalesce(trim(p_group), ''), 60));
+      out := out || c;
+    exception when unique_violation then null; -- extremely rare: try again
+    end;
+  end loop;
+  return jsonb_build_object('ok', true, 'codes', to_jsonb(out));
+end $$;
+
+create or replace function public.lab_teacher_list(p_password text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  if not lab_teacher_ok(p_password) then return jsonb_build_object('ok', false, 'error', 'wrong_password'); end if;
+  return jsonb_build_object('ok', true, 'rows', coalesce((
+    select jsonb_agg(jsonb_build_object('code', c.code, 'grp', c.grp, 'created_at', c.created_at, 'updated_at', w.updated_at, 'data', coalesce(w.data, '{}'::jsonb)) order by c.grp, c.created_at, c.code)
+    from lab_codes c left join lab_work w on w.code = c.code), '[]'::jsonb));
+end $$;
+
+create or replace function public.lab_teacher_delete_code(p_password text, p_code text) returns jsonb
+language plpgsql security definer set search_path = public as $$
+begin
+  if not lab_teacher_ok(p_password) then return jsonb_build_object('ok', false, 'error', 'wrong_password'); end if;
+  delete from lab_codes where code = lab_norm(p_code);
+  return jsonb_build_object('ok', true);
+end $$;
+
+create or replace function public.lab_teacher_change_password(p_password text, p_new text) returns jsonb
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  if not lab_teacher_ok(p_password) then return jsonb_build_object('ok', false, 'error', 'wrong_password'); end if;
+  if length(coalesce(p_new, '')) < 8 then return jsonb_build_object('ok', false, 'error', 'too_short'); end if;
+  update lab_teacher set pw_hash = crypt(p_new, gen_salt('bf', 10)) where id = 1;
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- Admin only (SQL Editor): set or reset the teacher password.
+create or replace function public.lab_set_password(p_new text) returns text
+language plpgsql security definer set search_path = public, extensions as $$
+begin
+  if length(coalesce(p_new, '')) < 8 then raise exception 'Password must be at least 8 characters'; end if;
+  insert into lab_teacher (id, pw_hash) values (1, crypt(p_new, gen_salt('bf', 10)))
+    on conflict (id) do update set pw_hash = excluded.pw_hash, failed = 0, locked_until = null;
+  return 'Teacher password set.';
+end $$;
+
+-- ---------- who may call what ----------
+revoke execute on function public.lab_norm(text), public.lab_gen_code(), public.lab_teacher_ok(text), public.lab_set_password(text),
+  public.lab_student_load(text), public.lab_student_save(text, jsonb), public.lab_teacher_login(text),
+  public.lab_teacher_create_codes(text, int, text), public.lab_teacher_list(text), public.lab_teacher_delete_code(text, text),
+  public.lab_teacher_change_password(text, text) from public, anon, authenticated;
+grant execute on function public.lab_student_load(text), public.lab_student_save(text, jsonb),
+  public.lab_teacher_login(text), public.lab_teacher_create_codes(text, int, text), public.lab_teacher_list(text),
+  public.lab_teacher_delete_code(text, text), public.lab_teacher_change_password(text, text)
+  to anon, authenticated;
+
+-- ---------- NEXT STEP: set your teacher password ----------
+-- In a NEW query, run this line with your own password (at least 8 characters):
+--
+--   select public.lab_set_password('choose-a-strong-password');
+--
+-- Forgot it later? Run the same line again with a new password.

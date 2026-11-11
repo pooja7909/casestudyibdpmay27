@@ -15,10 +15,12 @@ CT.cardSetup = (onChange) => {
     box.innerHTML = '';
     const c = CT.card();
     if (c) {
-      box.append(CT.cardEl(c), h('div', { class: 'row', style: 'margin-top:10px' }, h('span', { class: 'small muted' }, `Card for “${store.get('name')}”. Your teacher can recreate it from the same name.`),
-        h('button', { class: 'btn ghost small', onclick: () => { store.set('name', ''); draw(); onChange && onChange(); } }, 'Change name')));
+      const viaCode = typeof CLOUD !== 'undefined' && CLOUD.S.code;
+      box.append(CT.cardEl(c), viaCode ? h('p', { class: 'small muted', style: 'margin-top:10px' }, `Your card comes from your code ${CLOUD.S.code}.`) : h('div', { class: 'row', style: 'margin-top:10px' }, h('span', { class: 'small muted' }, `Card for “${store.get('name')}”.`),
+        h('button', { class: 'btn ghost small', onclick: () => { store.set('name', ''); draw(); onChange && onChange(); } }, 'Change')));
     } else {
-      const inp = h('input', { type: 'text', id: 'cc-name', placeholder: 'Your name or class code', style: 'border:1.5px solid var(--line);border-radius:10px;padding:9px 12px;background:var(--card);min-width:240px' });
+      if (typeof CLOUD !== 'undefined' && CLOUD.enabled) { box.append(h('p', { class: 'small', style: 'margin-bottom:10px' }, 'Every student gets a different client, so your evidence and recommendation are your own.'), h('a', { href: '#account', class: 'btn', style: 'text-decoration:none;display:inline-block' }, 'Enter your code to get your card')); return; }
+      const inp = h('input', { type: 'text', id: 'cc-name', placeholder: 'Any nickname or word', style: 'border:1.5px solid var(--line);border-radius:10px;padding:9px 12px;background:var(--card);min-width:240px' });
       const go = () => { if (inp.value.trim().length < 2) { inp.focus(); return; } store.set('name', inp.value.trim()); draw(); onChange && onChange(); };
       inp.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
       box.append(h('p', { class: 'small', style: 'margin-bottom:10px' }, 'Every student gets a different client, so your evidence and recommendation are your own and can’t be copied from a classmate or an AI.'),
@@ -158,7 +160,7 @@ CT.aiLog = () => {
 function compileWork(get) {
   get = get || ((k) => get(k));
   const L = []; const c = get('name') ? caseCard(get('name')) : null; const g = (k) => (get(k) || '').toString().trim();
-  L.push(`DIFFUSE VISION LAB — MY WORK`, `Name: ${get('name') || '(not set)'}`);
+  L.push(`DIFFUSE VISION LAB — MY WORK`, `Student: ${get('name') || '(not started yet)'}`);
   if (c) L.push(`Case #${c.code}: ${c.client[0]}, ${c.client[1]}; ${c.images} images in ${c.deadline[0]}; ${c.quality[0]}; ${c.hardware[0]}; special: ${c.special}.`);
   LABS.forEach(l => {
     const pr = get(`pred:${l.id}`);
@@ -184,7 +186,7 @@ function renderMyWork() {
   const refresh = () => { pre.value = compileWork(); };
   wrap.append(h('p', { class: 'eyebrow' }, 'Hand-in'), h('h1', {}, 'My work'),
     h('p', { class: 'big muted', style: 'margin:10px 0 20px;max-width:62ch' }, 'Everything you have predicted, recorded and argued, in one place. Your teacher marks your reasoning, not just the final answer.'),
-    CLOUD.enabled ? h('p', { class: 'callout', style: 'margin-bottom:18px' }, CLOUD.S.user ? 'You are signed in: this work saves to your account automatically and your teacher can see it.' : h('span', {}, h('a', { href: '#account' }, 'Sign in'), ' so your work saves to your account and your teacher can see it.')) : '',
+    CLOUD.enabled ? h('p', { class: 'callout', style: 'margin-bottom:18px' }, CLOUD.S.code ? `You are working with code ${CLOUD.S.code}: this work saves automatically and your teacher can see it.` : h('span', {}, h('a', { href: '#account' }, 'Enter your code'), ' so your work saves online and your teacher can see it.')) : '',
     h('section', { class: 'panel' }, h('h2', { style: 'margin-bottom:12px' }, 'Your case card'), CT.cardSetup(refresh)),
     h('section', { class: 'panel', style: 'margin-top:18px' }, h('h2', { style: 'margin-bottom:6px' }, 'AI-use log'), h('p', { class: 'small muted', style: 'margin-bottom:12px' }, 'The case study asks Visionary Studios to disclose AI use to keep trust (lines 103–105). The same rule applies to your work.'), CT.aiLog()),
     h('section', { class: 'panel', style: 'margin-top:18px' }, h('div', { class: 'section-head' }, h('h2', {}, 'Everything, ready to copy'),
@@ -201,13 +203,13 @@ function renderTeacher() {
     h('section', { class: 'panel' }, h('h2', { style: 'margin-bottom:12px' }, 'How the lab builds critical thinking'),
       h('div', { class: 'grid2' }, ...[
         ['Prediction lock', 'The simulation stays locked until a student commits a prediction and a reason. Afterwards they reflect on what changed their mind.'],
-        ['Personal case cards', 'Each name produces a different client (volume, deadline, hardware, special requirement). Recreate any card by typing the student’s name on the My work page.'],
+        ['Personal case cards', 'Each student code produces a different client (volume, deadline, hardware, special requirement). The dashboard shows each student’s card in their work.'],
         ['Evidence log', 'Each lab asks for numbers and observations from the student’s own simulation runs, applied to their client.'],
         ['Spot the AI’s mistakes', 'Every lab has a fluent AI-style answer with factual errors and weak reasoning. Students flag, fix and cite booklet lines.'],
         ['Stress tests and transfer', '“What would change your mind?” and unseen-scenario questions. A model answer appears only after the student writes their own.'],
         ['Confidence calibration', 'Before each multiple-choice answer, students rate their confidence. “Sure but wrong” answers show them where to revise.'],
         ['Comparative judgement', 'Lab 07: mark a fluent-but-empty answer against a short, precise one, then compare with the examiner view.'],
-        ['Memo and AI log', 'A final recommendation memo plus an AI-use log, compiled on the My work page for submission.']].map(([t, d]) => h('div', { class: 'gitem' }, h('h4', {}, t), h('p', {}, d))))),
+        ['Memo and AI log', 'A final recommendation memo plus an AI-use log. With the database connected, you see everything on the Dashboard.']].map(([t, d]) => h('div', { class: 'gitem' }, h('h4', {}, t), h('p', {}, d))))),
     h('section', { class: 'panel', style: 'margin-top:18px' }, h('h2', { style: 'margin-bottom:6px' }, 'Board meeting role-play (45 min)'),
       h('ol', { class: 'tasks', style: 'margin:10px 0 16px' }, ...['Groups of five. Each student takes one role card and one case card (any student’s card works).', '10 min: prepare a 1-minute opening using evidence from the lab.', '15 min: openings, then each role must raise its challenge to at least one other role.', '10 min: the group agrees a recommendation and writes the strongest objection they overruled.', '10 min: individual exit ticket. Write one argument that changed your mind, with a booklet line.'].map(t => h('li', {}, t))),
       h('div', { class: 'grid3 rolecards' }, ...ROLES.map(([r, p, q, c]) => h('div', { class: 'role' }, h('h3', {}, r), h('p', {}, h('b', {}, 'You care about: '), p), h('p', {}, h('b', {}, 'Your opening question: '), q), h('p', {}, h('b', {}, 'Your duty: '), c))))),

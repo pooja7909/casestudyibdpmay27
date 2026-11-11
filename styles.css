@@ -319,3 +319,13 @@ pre.policy { white-space: pre-wrap; font-family: var(--body); background: var(--
 table.dash td { vertical-align: top; font-size: 14px; }
 .warnc { color: var(--bad); font-weight: 700; }
 @media (max-width: 760px) { .syncchip { display: none; } }
+
+.codein { font-family: var(--mono); font-size: 26px !important; letter-spacing: .12em; text-transform: uppercase; max-width: 320px; }
+.bigcode { font-family: var(--mono); font-size: 40px; font-weight: 700; letter-spacing: .1em; color: var(--accent); }
+.codegrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px; margin: 10px 0; font-family: var(--mono); font-weight: 700; }
+.codegrid span { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; text-align: center; }
+.field input[type=number], .field input[type=text], .field input[type=password] { min-width: 0; }
+.navlinks a, .brand { white-space: nowrap; }
+#t-npw { border: 1.5px solid var(--line); background: var(--card); border-radius: 10px; padding: 7px 10px; }
+@media (max-width: 1400px) { .overall { display: none; } }
+@media (max-width: 1000px) { .navlinks a { padding: 6px 5px; font-size: 13px; } .brand { font-size: 16px; } }

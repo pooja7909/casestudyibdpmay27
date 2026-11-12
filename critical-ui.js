@@ -158,7 +158,7 @@ CT.aiLog = () => {
 
 // --- My work page ---
 function compileWork(get) {
-  get = get || ((k) => get(k));
+  get = get || ((k) => store.get(k));
   const L = []; const c = get('name') ? caseCard(get('name')) : null; const g = (k) => (get(k) || '').toString().trim();
   L.push(`DIFFUSE VISION LAB — MY WORK`, `Student: ${get('name') || '(not started yet)'}`);
   if (c) L.push(`Case #${c.code}: ${c.client[0]}, ${c.client[1]}; ${c.images} images in ${c.deadline[0]}; ${c.quality[0]}; ${c.hardware[0]}; special: ${c.special}.`);
